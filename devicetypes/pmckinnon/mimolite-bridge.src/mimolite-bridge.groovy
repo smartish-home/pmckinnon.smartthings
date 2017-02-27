@@ -37,11 +37,23 @@ metadata {
 			state "closed", label: '${name}', icon: "st.contact.contact.closed", backgroundColor: "#79b821"
 		}
 
+    valueTile("adc", "device.adc_value", width: 2, height: 1) {
+      state "default", label: '${currentValue}'
+    }
+
+    valueTile("voltage", "device.voltage", width: 2, height: 1) {
+      state "default", label: '${currentValue} V'
+    }
+
+    valueTile("pulse_count", "device.pulse_count", width: 2, height: 1) {
+      state "default", label: '${currentValue}x'
+    }
+
     standardTile("refresh", "device.switch", inactiveLabel: false, decoration: "flat") {
 			state "default", label:'', action:"refresh.refresh", icon:"st.secondary.refresh"
 		}
 
-    standardTile("powered", "device.powered", inactiveLabel: false) {
+    standardTile("powered", "device.powered", width: 2, height: 2, inactiveLabel: false) {
 			state "powerOn", label: "Power On", icon: "st.switches.switch.on", backgroundColor: "#79b821"
 			state "powerOff", label: "Power Off", icon: "st.switches.switch.off", backgroundColor: "#ffa81e"
 		}
@@ -51,14 +63,14 @@ metadata {
 		}
 
 		main (["switch", "contact"])
-		details(["switch", "powered", "refresh", "configure"])
+		details(["switch", "voltage", "adc", "pulse_count", "powered", "refresh", "configure"])
 	}
 }
 
 def parse(String description) {
   log.debug "description is: ${description}"
 
-	def result = null
+	def events = null
 	def cmd = zwave.parse(description, [0x20: 1, 0x84: 1, 0x30: 1, 0x70: 1])
 
   log.debug "command $cmd"
@@ -73,26 +85,25 @@ def parse(String description) {
       sendEvent(name: "powered", value: "powerOn", descriptionText: "$device.displayName regained power")
     }
 
-		result = createEvent(zwaveEvent(cmd))
-	  log.debug "Parse returned ${result?.descriptionText}"
+		events = zwaveEvent(cmd)
 	}
 
-	return result
+	log.debug "Events ${events}"
+	return events
 }
 
 def sensorValueEvent(Short value) {
-	if (value) {
-        sendEvent(name: "contact", value: "open")
-        sendEvent(name: "switch", value: "doorOpen")
-	} else {
-        sendEvent(name: "contact", value: "closed")
-        sendEvent(name: "switch", value: "doorClosed")
+  if(value) {
+    createEvent(name: "contact", value: "open")
+  }
+  else {
+    createEvent(name: "contact", value: "closed")
 	}
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
   log.debug "value: " + cmd.value
-	[name: "switch", value: cmd.value ? "on" : "off", type: "physical"]
+	createEvent([name: "switch", value: cmd.value ? "on" : "off", type: "physical"])
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicSet cmd)
@@ -102,7 +113,7 @@ def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicSet cmd)
 
 def zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
   log.debug "Binary Report: $cmd"
-  [name: "switch", value: cmd.value ? "on" : "off", type: "digital"]
+  createEvent([name: "switch", value: cmd.value ? "on" : "off", type: "digital"])
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.sensorbinaryv1.SensorBinaryReport cmd)
@@ -115,11 +126,27 @@ def zwaveEvent(physicalgraph.zwave.commands.alarmv1.AlarmReport cmd)
     log.debug "We lost power" //we caught this up in the parse method. This method not used.
 }
 
+def zwaveEvent(physicalgraph.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd) {
+  log.debug "Sensor Multilevel Report: $cmd"
+  log.debug "Scaled Value: ${cmd.scaledSensorValue}"
+
+  [
+    createEvent(name: "adc_value", value: cmd.scaledSensorValue),
+    createEvent(name: "voltage", value: 12.5, unit: 'V')
+  ]
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.meterpulsev1.MeterPulseReport cmd) {
+  log.debug "pulse report: $cmd"
+  createEvent(name: "pulse_count", value: cmd.pulseCount);
+}
+
 def zwaveEvent(physicalgraph.zwave.Command cmd) {
   log.debug "Other command: $cmd"
 	// Handles all Z-Wave commands we aren't interested in
 	[:]
 }
+
 
 def installed() {
   log.debug "installed"
@@ -136,9 +163,15 @@ def configure() {
   Integer config = outputMs == 0 ? 0 : (outputMs < 100 ? 1 : outputMs / 100);
   log.debug "Config: $config"
 	delayBetween([
+    // Send AlarmReport on power failure
 		zwave.associationV1.associationSet(groupingIdentifier:3, nodeId:[zwaveHubNodeId]).format(),
+
     zwave.configurationV1.configurationSet(configurationValue: [config], parameterNumber: 11, size: 1).format(),
-    zwave.configurationV1.configurationGet(parameterNumber: 11).format(),
+    //zwave.configurationV1.configurationSet(configurationValue: [0xfd], parameterNumber: 4, size: 1).format(),
+    //zwave.configurationV1.configurationSet(configurationValue: [0xd0], parameterNumber: 5, size: 1).format(),
+    zwave.configurationV1.configurationSet(configurationValue: [0x02], parameterNumber: 8, size: 1).format(),
+    zwave.configurationV1.configurationSet(configurationValue: [0x01], parameterNumber: 2, size: 1).format(),
+    zwave.configurationV1.configurationGet(parameterNumber: 7).format(),
 		zwave.switchBinaryV1.switchBinaryGet().format()
 	])
 }
@@ -163,5 +196,9 @@ def poll() {
 }
 
 def refresh() {
-	zwave.switchBinaryV1.switchBinaryGet().format()
+  delayBetween([
+    zwave.sensorMultilevelV5.sensorMultilevelGet().format(),
+    zwave.meterPulseV1.meterPulseGet().format(),
+    zwave.switchBinaryV1.switchBinaryGet().format()
+  ])
 }
